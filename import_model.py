@@ -14,12 +14,16 @@ def main():
     source.add_argument("--legacy", type=Path, help="Original tensor-only checkpoint; loaded with weights_only=True")
     p.add_argument("--revision")
     p.add_argument("--loss-mode", choices=["word_final", "original_subwords", "archived_word_final"], help="Required for legacy task checkpoints: training loss provenance cannot be inferred from weights")
-    p.add_argument("--tokenizer", default=TOKENIZER_ID)
+    p.add_argument("--tokenizer", help="Legacy import only; defaults to the pinned mELECTRA tokenizer")
     p.add_argument("--kind", choices=["encoder", "punctuation", "exit"], default="encoder")
-    p.add_argument("--family", choices=FAMILIES, default="Small")
-    p.add_argument("--layers", type=int, default=6)
+    p.add_argument("--family", choices=FAMILIES, help="Legacy import only; default Small")
+    p.add_argument("--layers", type=int, help="Legacy import only; default 6")
     p.add_argument("--out", required=True)
     a = p.parse_args()
+    if a.hf and any(value is not None for value in (a.tokenizer, a.family, a.layers)):
+        p.error("--tokenizer, --family and --layers apply only to --legacy; HF import uses its own configuration and tokenizer")
+    if a.legacy and a.revision is not None:
+        p.error("--revision applies only to --hf")
     torch.set_num_threads(4)
     if a.legacy and a.kind != "encoder" and a.loss_mode is None:
         p.error("Legacy punctuation/exit import requires --loss-mode from the checkpoint's training record")
@@ -40,10 +44,14 @@ def main():
             state["embeddings_project.weight"] = torch.eye(c.hidden_size)
             state["embeddings_project.bias"] = torch.zeros(c.hidden_size)
         model.load_state_dict(state, strict=True)
-        tok = tokenizer_from(a.hf, a.revision)
-        metadata = {"source": a.hf, "revision": a.revision, "fine_tuned": False}
+        resolved_revision = getattr(hc, "_commit_hash", None)
+        tok = tokenizer_from(a.hf, resolved_revision or a.revision)
+        metadata = {"source": a.hf, "revision": resolved_revision,
+                    "requested_revision": a.revision, "fine_tuned": False}
     else:
-        tok = tokenizer_from(a.tokenizer)
+        a.family = a.family if a.family is not None else "Small"
+        a.layers = a.layers if a.layers is not None else 6
+        tok = tokenizer_from(a.tokenizer or TOKENIZER_ID)
         c = Config.family(a.family, a.layers, vocab_size=len(tok), pad_token_id=tok.pad_token_id)
         raw = torch.load(a.legacy, map_location="cpu", weights_only=True)
         if not isinstance(raw, dict) or not all(isinstance(v, torch.Tensor) for v in raw.values()):

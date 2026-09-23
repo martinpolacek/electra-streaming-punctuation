@@ -18,5 +18,5 @@ initial audit; those source files are not runtime dependencies.
 
 Tokenizer: [AILabTUL/mELECTRA](https://huggingface.co/AILabTUL/mELECTRA), revision
 `b4f2d443cff9c9ca2c9a63c246c6c343a9b5396d`, credited to AILabTUL under
-[CC BY4.0](https://creativecommons.org/licenses/by/4.0/). The tokenizer is fetched
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The tokenizer is fetched
 or supplied by the user and is not vendored in this source repository.

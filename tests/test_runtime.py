@@ -156,3 +156,37 @@ def test_bundle_rejects_architecture_and_tokenizer_wrapper_changes(tmp_path, mod
     config.write_text(config.read_text(encoding="utf-8") + " ", encoding="utf-8")
     with pytest.raises(ValueError, match="integrity"):
         load_bundle(path)
+
+
+def test_cache_reuses_exact_prefix_with_eviction(model, tokenizer):
+    words = "hello playing world how are you today yes no".split() * 25
+    cache = KVCache(model)
+    reused, evicted = 0, 0
+    for item in windows(words, tokenizer):
+        previous_bounds = cache.bounds
+        previous = None if cache.cache is None else [(k.clone(), v.clone()) for k, v in cache.cache]
+        cache.step(*item)
+        _, a, _, active, _, _ = item
+        if not cache.last_stats["full_refresh"]:
+            pa, _ = previous_bounds
+            prefix = active - a
+            for old, new in zip(previous, cache.cache):
+                for before, after in zip(old, new):
+                    assert torch.equal(before[:, :, a-pa:active-pa], after[:, :, :prefix])
+            reused += 1
+            evicted += int(a > pa)
+    assert reused > 100 and evicted > 100
+
+
+def test_validation_reports_each_exit_head(model, tokenizer):
+    from apr.training import validate
+    with torch.no_grad():
+        for depth, head in model.heads.items():
+            head[-1].weight.zero_()
+            head[-1].bias.zero_()
+            head[-1].bias[1 if depth == "2" else 0] = 10
+    result = validate(model, ["hello ? world ?"], tokenizer, "cpu", loss_mode="word_final")
+    assert set(result) == {"2", "3", "4", "5", "6"}
+    assert result["2"]["question_f1"] == 100
+    assert result["6"]["question_f1"] == 0
+    assert result["2"]["punctuation_support"] == result["6"]["punctuation_support"] == 2

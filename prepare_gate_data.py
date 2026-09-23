@@ -4,14 +4,13 @@ import hashlib
 from pathlib import Path
 import numpy as np
 from apr.artifacts import fresh_dir, write_json, sha256
-from apr.data import words_labels, write_records
-from apr.legacy_data import generate_dataset
+from apr.data import words_labels, normalized_words_labels, write_records, load_finetuning_data
 
-def split_pools(train, dev):
+def split_pools(train, dev, loss_mode="word_final"):
     def unique(lines):
         result = {}
         for line in lines:
-            words, labels = words_labels(line)
+            words, labels = (normalized_words_labels if loss_mode == "word_final" else words_labels)(line)
             if words:
                 key = hashlib.sha256(" ".join(words).encode()).hexdigest()
                 result.setdefault(key, (words, labels))
@@ -29,6 +28,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data-dir", required=True, help="The same training .utf8 files used for punctuation fine-tuning")
     p.add_argument("--out", required=True)
+    p.add_argument("--loss-mode", choices=["word_final", "original_subwords", "archived_word_final"],
+                   default="word_final", help="Match the punctuation model's training mode")
     p.add_argument("--fit-streams", type=int, default=128)
     p.add_argument("--calibration-streams", type=int, default=48)
     p.add_argument("--validation-streams", type=int, default=48)
@@ -37,7 +38,8 @@ def main():
     counts = dict(fit=a.fit_streams, calibrate=a.calibration_streams, validate=a.validation_streams)
     if min(*counts.values(), a.words_per_stream) < 1:
         p.error("All stream counts and lengths must be positive")
-    pools, dropped = split_pools(*generate_dataset(a.data_dir, 0.05, shortcuts_path=None))
+    train, dev, statistics = load_finetuning_data(a.data_dir, a.loss_mode)
+    pools, dropped = split_pools(train, dev, a.loss_mode)
     rng = np.random.default_rng(20260909)
     prepared = {}
     for split, pool in pools.items():
@@ -57,10 +59,11 @@ def main():
                 labels.extend(y)
                 families.append(key)
             streams.append({"id": f"{split}_{index:03d}", "split": split, "words": words[:a.words_per_stream],
-                            "labels": labels[:a.words_per_stream], "sentence_hashes": families})
+                            "labels": labels[:a.words_per_stream], "sentence_hashes": families, "loss_mode": a.loss_mode})
         prepared[split] = streams
     out = fresh_dir(a.out)
     manifest = {"source_files": {p.name: sha256(p) for p in sorted(Path(a.data_dir).glob("*.utf8"))},
+                "loss_mode": a.loss_mode, "data_statistics": statistics,
                 "removed_train_dev_families": dropped, "seed": 20260909, "words_per_stream": a.words_per_stream,
                 "pool_sizes": {k: len(v) for k, v in pools.items()}, "splits": {}}
     for split, rows in prepared.items():

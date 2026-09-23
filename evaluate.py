@@ -14,13 +14,14 @@ def main():
     p.add_argument("--policy")
     p.add_argument("--gate")
     p.add_argument("--tau", type=float)
+    p.add_argument("--window", type=int, choices=[32, 64, 128], default=64)
     p.add_argument("--device", default="cpu")
     p.add_argument("--threads", type=int, default=4)
     a = p.parse_args()
     if a.threads < 1:
         p.error("threads must be positive")
     torch.set_num_threads(a.threads)
-    predictor = Predictor(a.model, a.mode, a.policy, a.gate, a.tau, device=a.device)
+    predictor = Predictor(a.model, a.mode, a.policy, a.gate, a.tau, window=a.window, device=a.device)
     gold, pred, deleted = [], [], []
     repairs, depths = 0, 0
     for record in read_records(a.data):

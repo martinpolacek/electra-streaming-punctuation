@@ -31,6 +31,8 @@ def main():
     for index, record in enumerate(records):
         if record.get("split") != a.split or not record.get("sentence_hashes"):
             raise ValueError("Use the matching output of prepare_gate_data.py; split identity and sentence hashes are required")
+        if "loss_mode" in record and record["loss_mode"] != doc["metadata"].get("loss_mode"):
+            raise ValueError("Gate data loss mode does not match the punctuation model")
         fingerprints.update(record["sentence_hashes"])
         cache = KVCache(model)
         for label, item in zip(record["labels"], windows(record["words"], tok, device=a.device)):

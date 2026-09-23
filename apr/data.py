@@ -114,6 +114,34 @@ def words_labels(text):
                 labels.append(0)
     return words, labels
 
+def normalized_words_labels(text):
+    """Shared lexical input/labels for word-final training, gate data and inference."""
+    return words_labels(re.sub(r"([.,?!])", r" \1 ", text).replace("!", "."))
+
+
+def normalize_words(text):
+    return normalized_words_labels(text)[0]
+
+
+def filter_lexical_blocks(blocks, split):
+    kept = [block for block in blocks if normalize_words(block)]
+    if not kept:
+        raise ValueError(f"No lexical words remain in the {split} blocks")
+    return kept, len(blocks) - len(kept)
+
+
+def load_finetuning_data(folder, loss_mode="word_final"):
+    from .legacy_data import generate_dataset
+    if loss_mode not in ("word_final", "original_subwords", "archived_word_final"):
+        raise ValueError("Unknown fine-tuning loss mode")
+    statistics = {}
+    train, dev = generate_dataset(
+        folder, 0.05, retain_tail=loss_mode == "word_final",
+        sentence_filter=(lambda text: bool(normalize_words(text))) if loss_mode == "word_final" else None,
+        statistics=statistics)
+    return train, dev, statistics
+
+
 def read_records(path):
     rows = []
     with open(path, encoding="utf-8") as stream:
@@ -129,6 +157,10 @@ def read_records(path):
             deleted = row.get("deleted_reference_labels", [])
             if not isinstance(deleted, list) or any(type(v) is not int or v not in range(4) for v in deleted):
                 raise ValueError(f"Invalid deleted reference labels in record {number}")
+            for index, word in enumerate(words, 1):
+                if normalize_words(word) != [word.lower()]:
+                    raise ValueError(f"Non-normalized word in record {number}, word {index}: {word!r}; "
+                                     "supply one unpunctuated lexical word per aligned label")
             row["words"] = [w.lower() for w in words]
             rows.append(row)
     if not rows:
@@ -162,7 +194,7 @@ def windows(words, tokenizer, window=64, lookahead=4, device="cpu"):
 
 def lexical_batch(texts, tokenizer, max_length=512):
     """Current manuscript: remove punctuation first, supervise completed word ends."""
-    parsed = [words_labels(re.sub(r"([.,?!])", r" \1 ", text).replace("!", ".")) for text in texts]
+    parsed = [normalized_words_labels(text) for text in texts]
     if any(not words for words, _ in parsed):
         raise ValueError("A fine-tuning block contains no lexical words")
     sequences = [words for words, _ in parsed]

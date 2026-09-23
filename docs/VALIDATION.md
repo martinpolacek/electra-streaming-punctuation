@@ -1,13 +1,15 @@
 # Release validation
 
-Validated on 22 September 2026, Python 3.13.3, Windows CPU,
+Validated on 23 September 2026, Python 3.13.3, Windows CPU,
 PyTorch 2.8.0+cu126 and Transformers 4.55.0.
 
 ## Automated checks
 
-- Complete offline suite: **18 passed** (149.03 seconds).
-- After final importer/empty-ASR changes: **3 focused regression tests passed**
-  (11.05 seconds), including two new tests; the repository contains 20 tests.
+- Complete offline suite after the review fixes: **51 passed** (94.44 seconds).
+- README smoke workflow passed using a local copy of the released Small-L6
+  encoder: native HF import, fine-tuning on `examples/`, and inference with the
+  actual tokenizer. Attached punctuation preserved the expected four input words.
+- Before these fixes, all 20 tests in the published version passed independently.
 - An independent Astra review also ran the earlier 18-test suite successfully.
 
 The tests cover an actual short pretraining run, deterministic resume with
@@ -16,6 +18,13 @@ feature collection, helpful-repair gate training, matched calibration, every
 inference policy, checkpoint integrity, partial-word masking and empty-ASR
 punctuation deletions. Synthetic gate examples in the CLI test test the training
 and calibration path, not the paper's reported quality.
+
+The added regressions cover attached punctuation across training/inference/gate
+preparation, rejection of punctuated aligned words, empty lexical inputs, final
+sentence fragments and numeric endings, per-depth validation, evaluation windows,
+HF conversion with and without an embedding projection, resolved Hub revisions,
+legacy exit-head mapping, and exact preservation of reused K/V prefixes during
+eviction. Native-HF tests use local synthetic models and require no download.
 
 ## Comparisons with original implementations
 
@@ -46,6 +55,11 @@ word-final path, model/tokenizer identity checks, and explicit training-mode
 provenance on legacy import. Final review reported no remaining concrete blocker
 in the reviewed changes. This is evidence from the listed tests and review,
 not a guarantee that no undiscovered bug exists.
+
+A subsequent read-only review of the published source used Claude Opus 5.5.
+It identified input-normalization, exit-validation and CLI issues. The fixes and
+regression checks listed above were applied after that review; the 51-test run
+validates the resulting source. Claude did not perform a second review of the fixes.
 
 ## Scope
 

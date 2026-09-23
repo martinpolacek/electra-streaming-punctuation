@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import torch
 from .artifacts import fresh_dir, load_bundle, save_bundle, write_json, sha256
-from .legacy_data import generate_dataset, generate_random_lenghts, connect_sentences
-from .data import make_batch
+from .legacy_data import generate_random_lenghts, connect_sentences
+from .data import make_batch, load_finetuning_data, filter_lexical_blocks
 from .config import CLASS_WEIGHTS
 from .metrics import metrics
 from .model import Punctuator
@@ -26,13 +26,15 @@ def masked_ce(logits, labels, mask, weights):
 @torch.inference_mode()
 def validate(model, blocks, tokenizer, device, batch_size=8, loss_mode="original_subwords"):
     model.eval()
-    gold, predicted = [], []
+    gold = []
+    predicted = {str(depth): [] for depth in model.exits}
     for offset in range(0, len(blocks), batch_size):
         ids, mask, labels, _, ends = make_batch(blocks[offset:offset+batch_size], tokenizer, loss_mode)
-        logits = model(ids.to(device), mask.to(device))[-1].cpu()
+        outputs = model(ids.to(device), mask.to(device))
         gold.extend(labels[ends].tolist())
-        predicted.extend(logits.argmax(-1)[ends].tolist())
-    return metrics(gold, predicted)
+        for depth, logits in zip(model.exits, outputs):
+            predicted[str(depth)].extend(logits.cpu().argmax(-1)[ends].tolist())
+    return {depth: metrics(gold, labels) for depth, labels in predicted.items()}
 
 def main(exit_training=False):
     p = argparse.ArgumentParser(description="Train frozen intermediate exit heads" if exit_training else "Fine-tune punctuation ELECTRA")
@@ -66,16 +68,21 @@ def main(exit_training=False):
         model.backbone.load_state_dict(loaded.state_dict(), strict=True)
     if model.config.max_position_embeddings < 512:
         raise ValueError("Original fine-tuning requires 512 position embeddings")
-    train, dev = generate_dataset(a.data_dir, 0.05, shortcuts_path=None)
+    train, dev, data_statistics = load_finetuning_data(a.data_dir, a.loss_mode)
     train_lengths = generate_random_lenghts(train)
     dev_lengths = generate_random_lenghts(dev)
-    dev_blocks = connect_sentences(dev, dev_lengths)[:a.max_validation_blocks]
+    dev_blocks = connect_sentences(dev, dev_lengths)
+    if a.loss_mode == "word_final":
+        dev_blocks, dropped = filter_lexical_blocks(dev_blocks, "validation")
+        data_statistics["discarded_validation_blocks"] = dropped
+    dev_blocks = dev_blocks[:a.max_validation_blocks]
+    print(f"Data preparation: {data_statistics}", flush=True)
     out = fresh_dir(a.out)
     metadata = {"recipe": "exit" if exit_training else "fine-tuning", "loss_mode": a.loss_mode,
                 "seed": a.seed, "source_weights_sha256": doc["weights_sha256"],
                 "class_weights": CLASS_WEIGHTS, "validation_fraction": 0.05, "split_seed": 0,
                 "data_sha256": {f.name: sha256(f) for f in sorted(Path(a.data_dir).glob("*.utf8"))},
-                "arguments": vars(a)}
+                "data_statistics": data_statistics, "arguments": vars(a)}
     write_json(out / "run.json", metadata)
     weights = torch.tensor(CLASS_WEIGHTS, device=a.device)
     groups = [{"params": [v for v in model.heads.parameters() if v.requires_grad], "lr": 2e-4}]
@@ -87,6 +94,9 @@ def main(exit_training=False):
     stop = False
     for epoch in range(1, a.epochs+1):
         blocks = connect_sentences(train, train_lengths)
+        dropped = 0
+        if a.loss_mode == "word_final":
+            blocks, dropped = filter_lexical_blocks(blocks, "training")
         random.shuffle(blocks)
         model.train()  # Archived frozen-head training retains backbone dropout during training.
         for step, start in enumerate(range(0, len(blocks), a.batch_size)):
@@ -111,7 +121,10 @@ def main(exit_training=False):
                 stop = True
                 break
         quality = validate(model, dev_blocks, tok, a.device, a.batch_size, a.loss_mode)
-        history.append({"epoch": epoch, "steps": global_step, "validation_word_final": quality})
+        history.append({"epoch": epoch, "steps": global_step,
+                        "discarded_training_blocks": dropped,
+                        "validation_word_final": quality[str(model.exits[-1])],
+                        "validation_by_depth": quality})
         save_bundle(out / f"epoch{epoch}", model, tok, {**metadata, "completed_epoch": not stop, "epoch": epoch, "steps": global_step})
         if stop:
             break

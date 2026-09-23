@@ -1,10 +1,10 @@
 """Restore punctuation using full L6, real early exit or selective KV reuse."""
 import argparse
 import json
-import re
 from pathlib import Path
 import torch
 from apr.inference import Predictor
+from apr.data import normalize_words
 
 
 def main():
@@ -26,8 +26,7 @@ def main():
         p.error("threads must be positive")
     torch.set_num_threads(a.threads)
     raw = a.text if a.text is not None else a.input.read_text(encoding="utf-8")
-    words = ["".join(re.findall(r"\w+", word.lower())) for word in raw.split()]
-    words = [word for word in words if word and any(ch.isalnum() for ch in word)]
+    words = normalize_words(raw)
     predictor = Predictor(a.model, a.mode, a.policy, a.gate, a.tau, a.window, a.device)
     if a.format == "jsonl":
         for row in predictor.predict_words(words):

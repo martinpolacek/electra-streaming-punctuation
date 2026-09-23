@@ -22,8 +22,20 @@ fine-tuned before the inference commands are useful.
 | `original_subwords` | Tokenize punctuated text, then remove punctuation tokens | All nonpadding retained subwords |
 | `archived_word_final` | Same token IDs/labels as `original_subwords` | Completed word ends only |
 
-Use the same training mode when fitting exit heads for an existing model.
+Use the same `--loss-mode` when fitting exit heads and running
+`prepare_gate_data.py` for an existing model. The explicit `original_subwords`
+and `archived_word_final` modes retain the archived sentence parsing; the default
+`word_final` mode keeps final text fragments and filters nonlexical inputs.
 Fit new gates and exit heads after changing the fine-tuned encoder.
+
+## Native Hugging Face import
+
+`import_model.py --hf` reads the architecture and tokenizer from the same HF model
+or local native Transformers directory. `--family`, `--layers` and `--tokenizer`
+are legacy-import options and are rejected with `--hf`. Pin `--revision` to a
+commit for repeatable downloads. Bundle metadata records both `requested_revision`
+and the resolved commit in `revision`; local directories have no Hub commit.
+The tokenizer is fetched at the resolved model commit when available.
 
 ## Original checkpoints
 
@@ -43,7 +55,7 @@ configuration from the table above. `XXS` in the old filenames maps to
 `Mini`. The importer strictly checks tensor shapes/keys. It discards redundant
 single-expert router parameters and the deterministic position-ID buffer; the
 dense forward computation remains the same. Mini retains its learned embedding
-projection even though embedding and hidden widths are both128. A stock HF
+projection even though embedding and hidden widths are both 128. A stock HF
 ELECTRA with equal widths otherwise omits this layer.
 
 ## Deliberate engineering changes
@@ -70,8 +82,8 @@ The plain transcript download alone does not encode all original segment
 alignment metadata. Do not interpret whole-recording realignment as an exact
 reproduction of those ASR scores.
 
-CPU timings in the article used four pinned physical AMD EPYC9354 cores,
-float32 inference and PyTorch2.13.0+cu130. This release's tests run with the
+CPU timings in the article used four pinned physical AMD EPYC 9354 cores,
+float32 inference and PyTorch 2.13.0+cu130. This release's tests run with the
 versions pinned in `requirements.txt`; it does not assert that inference times
 on another environment equal the published measurements. It includes functional
 inference, not a replacement for the article's controlled timing protocol.

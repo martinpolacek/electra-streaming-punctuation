@@ -34,6 +34,11 @@ The final epoch is used; the validation set does not select a checkpoint.
 Input sentences are lowercased, split with validation fraction 0.05 and split
 seed 0, and assembled into blocks of 1-15 sentences. Trailing whitespace-separated
 tokens are randomly removed using the archived block-construction routine.
+In the default word-final mode, sentence extraction retains unfinished final text
+and numeric sentence endings; sentences and blocks without lexical words are
+filtered with counts recorded in the run metadata/history. Punctuation `.,?!`
+is separated before lexical normalization, and exclamation marks map to PERIOD.
+The same parser prepares the default gate labels and inference words.
 Inputs are truncated at 512 subwords for fine-tuning. Fine-tuning seeds are
 42,13,100. Evaluation uses complete word-final targets.
 
@@ -43,6 +48,7 @@ For L6 the exit depths are 2,3,4,5,6. Only added heads are trained, for two epoc
 with batch 8, head LR 2e-4, weighted CE averaged over intermediate heads, and
 no distillation term. Base/final-head parameters remain frozen; the archived
 training procedure leaves backbone dropout enabled while training the heads.
+Validation records separate word-final metrics for every head after each epoch.
 Inference uses evaluation mode and float32. The first eligible head whose maximum
 softmax probability is at least tau supplies the target label. All context tokens
 are updated through that layer. The complete window stops at the target's exit.

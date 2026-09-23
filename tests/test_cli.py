@@ -24,7 +24,8 @@ def test_training_exit_calibration_and_inference_cli(tmp_path, model, tokenizer)
     save_bundle(encoder_path, model.backbone, tokenizer)
     corpus = tmp_path / "corpus"
     corpus.mkdir()
-    lines = [f"hello entry{i}, this is a test today" + ("?" if i % 2 else ".") for i in range(1000)]
+    lines = [f"hello,entry{i}, this is a test today" + ("?" if i % 2 else ".") for i in range(1000)]
+    lines.append("________ .")
     (corpus / "train.utf8").write_text("\n".join(lines), encoding="utf-8")
     common = ["--data-dir", corpus, "--device", "cpu", "--threads", "1", "--epochs", "1", "--max-steps", "2", "--batch-size", "2", "--max-validation-blocks", "2"]
     ft = tmp_path / "finetune"
@@ -32,14 +33,18 @@ def test_training_exit_calibration_and_inference_cli(tmp_path, model, tokenizer)
     full, _, full_doc = load_bundle(ft / "model")
     assert full_doc["metadata"]["loss_mode"] == "word_final"
     assert not full_doc["metadata"]["completed_training"]
+    assert full_doc["metadata"]["data_statistics"]["discarded_nonlexical_sentences"] == 1
     ex = tmp_path / "exit"
     run("train_exit.py", "--model", ft / "model", "--out", ex, *common)
     exited, _, exit_doc = load_bundle(ex / "model")
     assert exited.exits == (2,3,4,5,6)
+    history = json.loads((ex / "training_history.json").read_text(encoding="utf-8"))
+    assert set(history[0]["validation_by_depth"]) == {"2", "3", "4", "5", "6"}
+    assert history[0]["validation_word_final"] == history[0]["validation_by_depth"]["6"]
     for key, value in full.state_dict().items():
         assert torch.equal(exited.state_dict()[key], value)
     for mode in ["full", "exit", "fast"]:
-        output = run("infer.py", "--model", ex / "model", "--text", "hello playing world how are you today", "--mode", mode, "--format", "jsonl")
+        output = run("infer.py", "--model", ex / "model", "--text", "hello,playing world how are you today?", "--mode", mode, "--format", "jsonl")
         rows = [json.loads(line) for line in output.splitlines()]
         assert len(rows) == 7
         assert all(row["label"] in range(4) for row in rows)
@@ -79,6 +84,9 @@ def test_training_exit_calibration_and_inference_cli(tmp_path, model, tokenizer)
             args += ["--gate", gate]
         assert run(*args).strip()
     output = run("evaluate.py", "--model", ex / "model", "--data", splits / "validate.jsonl")
+    assert json.loads(output)["words"] == 32
+    output = run("evaluate.py", "--model", ex / "model", "--data", splits / "validate.jsonl",
+                 "--mode", "gate", "--gate", gate, "--policy", policy)
     assert json.loads(output)["words"] == 32
 
 
@@ -142,3 +150,45 @@ def test_evaluation_retains_empty_asr_deletions(tmp_path, model, tokenizer, monk
     assert result["words"] == 0 and result["punctuation_support"] == 3
     assert result["weighted_f1"] == 0
     assert result["mean_depth"] is None
+
+
+def test_evaluation_forwards_window_and_enforces_cache_limit(tmp_path, model, tokenizer, monkeypatch, capsys):
+    import evaluate
+    import apr.inference
+    import pytest
+    path, data = tmp_path / "model", tmp_path / "data.jsonl"
+    save_bundle(path, model, tokenizer)
+    data.write_text(json.dumps({"words": ["hello"] * 140, "labels": [0] * 140}), encoding="utf-8")
+    actual_windows = apr.inference.windows
+    lengths = []
+    def observed_windows(*args, **kwargs):
+        for item in actual_windows(*args, **kwargs):
+            lengths.append(item[0].shape[1])
+            yield item
+    monkeypatch.setattr(apr.inference, "windows", observed_windows)
+    for size in (32, 64, 128):
+        for mode in ("full", "exit"):
+            lengths.clear()
+            monkeypatch.setattr(sys, "argv", ["evaluate.py", "--model", str(path), "--data", str(data),
+                                            "--window", str(size), "--mode", mode, "--threads", "1"])
+            evaluate.main()
+            assert json.loads(capsys.readouterr().out)["words"] == 140
+            assert max(lengths) == size
+    monkeypatch.setattr(sys, "argv", ["evaluate.py", "--model", str(path), "--data", str(data),
+                                    "--window", "32", "--mode", "fast"])
+    with pytest.raises(ValueError, match="64-subword"):
+        evaluate.main()
+
+
+def test_gate_feature_collection_rejects_training_mode_mismatch(tmp_path, model, tokenizer, monkeypatch):
+    import collect_features
+    import pytest
+    path, data = tmp_path / "model", tmp_path / "fit.jsonl"
+    save_bundle(path, model, tokenizer, {"loss_mode": "word_final"})
+    data.write_text(json.dumps({"words": ["hello"], "labels": [0], "split": "fit",
+                               "sentence_hashes": ["example"], "loss_mode": "original_subwords"}), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["collect_features.py", "--model", str(path), "--data", str(data),
+                                    "--split", "fit", "--out", str(tmp_path / "features.npz")])
+    with pytest.raises(ValueError, match="loss mode does not match"):
+        collect_features.main()
+    assert not (tmp_path / "features.npz").exists()

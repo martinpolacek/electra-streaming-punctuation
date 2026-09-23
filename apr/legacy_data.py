@@ -15,7 +15,7 @@ websites = "[.](com|net|org|io|gov)"
 MULTILINGUAL_FILTER = re.compile(r"[^\w.?, ]", re.UNICODE)
 
 
-def split_into_sentences(text):
+def split_into_sentences(text, retain_tail=False):
     text = " " + text + "  "
     text = text.replace("\n"," ")
     text = re.sub(prefixes,"\\1<prd>",text)
@@ -32,29 +32,41 @@ def split_into_sentences(text):
     if "\"" in text: text = text.replace(".\"","\".")
     if "!" in text: text = text.replace("!\"","\"!")
     if "?" in text: text = text.replace("?\"","\"?")
-    text = re.sub(r"(?<=[^0-9])(\.)",".<stop>", text)
-    text = re.sub(r"(?<=[^0-9])(\?)","?<stop>", text)
-    text = re.sub(r"(?<=[^0-9])(\!)","!<stop>", text)
+    if retain_tail:
+        # Keep decimal points inside numbers, but split terminal numeric sentences.
+        text = re.sub(r"(?<!\d)\.|\.(?!\d)|[?!]", r"\g<0><stop>", text)
+    else:
+        text = re.sub(r"(?<=[^0-9])(\.)",".<stop>", text)
+        text = re.sub(r"(?<=[^0-9])(\?)","?<stop>", text)
+        text = re.sub(r"(?<=[^0-9])(\!)","!<stop>", text)
     text = text.replace("<prd>",".")
     text = text.replace(":","")
     text = text.replace("#","")
     text = text.replace("$","")
     sentences = text.split("<stop>")
-    sentences = sentences[:-1]
-    sentences = [s.strip() for s in sentences]
+    if retain_tail:
+        sentences = [s.strip() for s in sentences if s.strip()]
+    else:
+        sentences = [s.strip() for s in sentences[:-1]]
     return sentences
 
 
-def generate_dataset(folder, validation_split, shortcuts_path=None):
+def generate_dataset(folder, validation_split, shortcuts_path=None, *, retain_tail=False,
+                     sentence_filter=None, statistics=None):
     lines = []
     zkratky = []
+    discarded = 0
+    files = sorted(file for file in os.listdir(folder) if file.endswith(".utf8")
+                   and os.path.isfile(os.path.join(folder, file)))
+    if not files:
+        raise ValueError(f"No .utf8 files found in {folder}")
 
     if shortcuts_path and os.path.exists(shortcuts_path):
         with open(shortcuts_path, "r", encoding="utf-8") as f:
             zkratky = f.read().split("\n")
         zkratky = sorted(set(zkratky))
 
-    for file in sorted(os.listdir(folder)):
+    for file in files:
         if file.endswith(".utf8"):
             with open(os.path.join(folder, file), "r", encoding='utf-8', errors='ignore') as f:
                 for line in f:
@@ -66,7 +78,7 @@ def generate_dataset(folder, validation_split, shortcuts_path=None):
                     replacement = r"\1 \2"
                     line = re.sub(pattern, replacement, line)
 
-                    line = split_into_sentences(line)
+                    line = split_into_sentences(line, retain_tail=retain_tail)
                     line = list((map(lambda x: x.lower(), line)))
 
                     for sent in line:
@@ -80,10 +92,17 @@ def generate_dataset(folder, validation_split, shortcuts_path=None):
                         out = MULTILINGUAL_FILTER.sub('', sent)
                         out = out.replace("  ", " ")
 
+                        if sentence_filter is not None and not sentence_filter(out):
+                            discarded += 1
+                            continue
                         if len(out.split()) > 0 and len(out) >= 7:
                             lines.append(out)
             logger.warning("Loaded file: " + str(file))
 
+    if statistics is not None:
+        statistics.update(usable_sentences=len(lines), discarded_nonlexical_sentences=discarded)
+    if len(lines) < 2:
+        raise ValueError("At least two usable sentences are required for the train/validation split")
     X_train, X_test, y_train, y_test = train_test_split(lines, lines, test_size=float(validation_split), random_state=0)
     return y_train, y_test
 

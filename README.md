@@ -31,6 +31,21 @@ For CUDA, install the PyTorch 2.8.0 build for your machine first, then install
 available, or accepts `--device cpu`. There is no experiment-tracking service,
 private server dependency or remote-code execution requirement.
 
+## Quick smoke test
+
+Run these commands after installation to check import, fine-tuning and inference:
+
+```bash
+python import_model.py --hf AILabTUL/electra-small-l6-czech --revision b0bb960a057dc7891a861a0a830220529eb88b5a --out runs/smoke_encoder
+python finetune.py --encoder runs/smoke_encoder --data-dir examples --out runs/smoke_l6 --device cpu --threads 1 --epochs 1 --max-steps 2
+python infer.py --model runs/smoke_l6/model --text "povazujete to za problem" --mode full
+```
+
+The import downloads the public encoder and tokenizer; the next two commands run
+locally. The example corpus only checks that the pipeline runs. Its model is not
+trained enough to produce useful punctuation. Use fresh output directories when
+repeating the commands. Follow the steps below for a complete training run.
+
 ## 1. Start with the released pretrained encoder
 
 ```bash
@@ -44,6 +59,10 @@ Prepare UTF-8 text files with the `.utf8` extension in `data/train/`, containing
 reference transcripts with punctuation. Exclude all test recordings before
 creating this directory. Sentence extraction and the fixed 5% validation split
 are performed by the script; train and validation blocks contain 1-15 sentences.
+The default preprocessing keeps an unfinished final sentence and sentences
+ending in a number. It filters sentences and constructed blocks without lexical
+words; counts are saved in `run.json` and `training_history.json`. If too little
+usable text remains for training and validation, the script stops with an error.
 The 320 News and 64 Talks/interviews test recordings must not be used for training.
 An example of the input format is in [examples/train.utf8](examples/train.utf8).
 
@@ -62,8 +81,10 @@ python infer.py --model runs/l6/model --text "povazujete to za problem" --mode f
 python infer.py --model runs/l6/model --input recording.txt --mode full --format jsonl
 ```
 
-Text is lowercased and existing punctuation is removed. One input file is one
-continuous recording. The model receives at most 64 subwords per decision and up
+Text uses the same lexical normalization as word-final training: it is lowercased,
+`.,?!` separate words, and other non-word characters are removed within each word.
+For example, `hello,world?` becomes two input words, `hello` and `world`.
+One input file is one continuous recording. The model receives at most 64 subwords per decision and up
 to four following words; the final four words use only available right context.
 Use `--window 32` or `--window 128` for the other full/exit windows in the paper.
 A word whose right context cannot fit causes an explicit error instead of a
@@ -80,7 +101,9 @@ For Small-L6 this adds heads at layers 2-5 and trains them for two epochs. The
 encoder and layer-6 head remain unchanged. At inference, every context token is
 updated until the target word reaches the selected exit; later layers are
 actually skipped. `--tau 0.99` is the fixed reference setting. Matched exit is
-calibrated separately below.
+calibrated separately below. `training_history.json` reports word-final validation
+metrics for every exit under `validation_by_depth`; `validation_word_final`
+retains the final-head metrics.
 
 ## 4. Optional KV reuse and gate
 
@@ -94,6 +117,8 @@ This deduplicates normalized sentences, removes train/dev overlaps and produces
 128 fit streams plus 48 calibration and 48 validation streams, each 256 words.
 Calibration and validation come from disjoint halves of the original 5%
 validation pool. These are artificial reference-text streams, not ASR recordings.
+The default is `--loss-mode word_final`; use the model's training mode here too.
+The selected mode is recorded in each stream and checked during feature collection.
 
 Collect features using the exact model that will be deployed. Using the model
 with exit heads also allows matched-exit calibration in the same command:
@@ -125,6 +150,14 @@ Thresholds minimize repairs (gate/margin/entropy), or average executed depth
 (matched exit), subject to calibration W-F1 at least that of the full model and
 at most a 0.5-point drop for each punctuation class. Test labels never select a
 threshold. The constraints apply to calibration, not a guarantee for unseen data.
+
+Evaluate the frozen policy on the separate validation streams:
+
+```bash
+python evaluate.py --model runs/l6_exit/model --data data/gate/validate.jsonl --mode gate --gate runs/gate --policy runs/policies.json
+```
+
+These labels assess the selected policy; they do not fit the gate or its threshold.
 
 ## 5. Pretrain another size from scratch
 
@@ -169,9 +202,20 @@ python -m pip install -r requirements-test.txt
 python -m pytest -q
 ```
 
-Evaluation input contains `words` and aligned integer `labels`; optional
-`deleted_reference_labels` count punctuation on deleted reference words as
-missed. This command does **not** infer ASR/reference alignments from raw text.
+Evaluation input contains `words` and one aligned integer `label` per word in
+`labels` (NONE=0, QUESTION=1, PERIOD=2, COMMA=3). Words must already be normalized
+and contain no punctuation; case is lowered automatically. For example:
+
+```json
+{"words": ["hello", "world"], "labels": [3, 1]}
+```
+
+Punctuated words such as `"world?"` are rejected with their record and word index.
+The evaluator never splits or deletes aligned words. Optional
+`deleted_reference_labels` count punctuation on deleted reference words as missed;
+empty ASR word lists are supported. This command does **not** infer ASR/reference
+alignments from raw text. Use `--window 32`, `64` or `128` for full/exit evaluation;
+cache policies require `64`, and calibrated policies must match their calibration window.
 The test suite uses synthetic data and tiny models, works offline and exercises
 training, checkpoint roundtrips, early exit, cache resets, calibration, inference
 and pretraining resume.
