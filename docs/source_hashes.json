@@ -1,0 +1,13 @@
+{
+  "paper/Template_rebase.tex": "984917563dd035763567c9dbbe80079f6daaa9e5174fede821584c3e3ed99dbe",
+  "evidence/20260907_l40/data_loader.py": "fd514944205d18b8973792aa87b1dc7d7fc9a3c0fbd0321e6d7b49ed319555f7",
+  "evidence/20260907_l40/finetune_scaling.py": "c236d32c678a2c28259a962b56b832e31e2fe9efb9f77da7888d6d746a3a2557",
+  "evidence/20260907_l40/multiexit.py": "a9258930101468f240286c56cd75d967c668707c6080e678d006f964ef1f4893",
+  "paper_experiments/runtime_model.py": "fc6a563c7a59008dfb755bdf17a198fecd2fe94cf8065e1f57d35187752cfaab",
+  "paper_experiments/target_exit.py": "70aa2cc683f43050cf9d362037b738462bb11c729e5304561445ec503059da82",
+  "paper_experiments/cache_gate_benchmark_runtime.py": "0eddf649b2b83f09a31473d133dd0ae582e382766edeac19af5d338eb63acbe1",
+  "paper_experiments/prepare_cache_gate_data.py": "645a380695c530b47c3307c899926049f5819eeec19624d67e5b7f430b2e1a16",
+  "paper_experiments/train_cache_gate.py": "4d48aeb6a1d80ea986486c1bf02f78adf0e462dff5f43cb14fb64ec145d72667",
+  "paper_experiments/calibrate_conservative_cache.py": "928d638b8360a7219fa71c08888f1891db3f1c52c20058b59366b955638eb9d0",
+  "paper_experiments/review_controls.py": "e4375a8d16d6da5cee556ad0faa53945223a179c07b14fc13278d3e7b0fc6515"
+}

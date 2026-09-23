@@ -1,0 +1,7 @@
+# Tested runtime. Install the appropriate torch 2.8.0 CPU/CUDA wheel for your hardware.
+torch==2.8.0
+transformers==4.55.0
+numpy==2.3.2
+scikit-learn==1.7.2
+sentencepiece==0.2.1
+safetensors==0.6.2

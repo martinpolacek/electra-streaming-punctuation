@@ -1,0 +1,14 @@
+{
+  "hf_hidden_max_abs": 9.059906005859375e-06,
+  "full_logits_max_abs": 0.0,
+  "cache_logits_max_abs": 0.0,
+  "cache_features_max_abs": 0.0,
+  "word_windows": 225,
+  "cache_label_mismatches": 0,
+  "full_label_mismatches": 0,
+  "fine_tuned_source_sha256": "888b252769cf8ac3932cce807cbf73aacc0b343a98b438e34116eef1e206bc97",
+  "versions": {
+    "torch": "2.8.0+cu126",
+    "transformers": "4.55.0"
+  }
+}
