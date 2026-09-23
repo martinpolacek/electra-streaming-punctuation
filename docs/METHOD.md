@@ -1,97 +1,116 @@
-# Method settings
+# Method and training settings
 
 ## Pretraining
 
-Dense ELECTRA replaced-token detection; generator and discriminator share word
-embeddings. The generator has the same depth, one attention head, and one
-quarter of the discriminator's hidden and feed-forward widths. Position tables
-have 512 entries; pretraining uses sequences of 128 subwords.
+ELECTRA replaced-token detection with shared word embeddings. The generator has
+the discriminator's depth, one attention head and one quarter of its hidden/FFN
+widths. Position tables have 512 entries.
 
-The objective is generator cross-entropy plus 50 times discriminator binary
-cross-entropy. Fifteen percent of eligible tokens are selected; 85% of selected
-positions receive `[MASK]` at the generator input and the remainder retain their
-input token. Generator samples use Gumbel-max. A sampled original token has RTD
-label zero. Special tokens are not selected for corruption; discriminator loss
-includes nonpadding tokens, as in the experiment implementation.
+| Setting | Value |
+|---|---|
+| Updates | 1,000,000 |
+| Batch / sequence length | 128 / 128 subwords |
+| Optimizer | AdamW without bias correction |
+| Beta / epsilon | (0.9, 0.999) / 1e-6 |
+| Weight decay | 0.01; zero for biases and LayerNorm |
+| Learning rate | 5e-4 peak; 10,000 warm-up updates, then linear decay |
+| Gradient norm limit | 1.0 |
+| Seed | 42 |
 
-AdamW without bias correction uses beta = (0.9,0.999), epsilon = 1e-6, weight decay
-0.01 except biases/LayerNorm, peak LR 5e-4, 10,000 warm-up updates and linear decay
-to one million updates. Gradient norm is clipped to 1.0. Shared embeddings occur
-only once in optimizer parameter groups. The first warm-up update has LR 0,
-matching the archived LambdaLR schedule. Pretraining seed is 42.
+Loss: generator cross-entropy + 50 x discriminator binary cross-entropy.
+Select 15% of eligible tokens; mask 85% of those and leave the rest unchanged
+at the generator input. Sample replacements with Gumbel-max; an unchanged token
+has replacement label zero. Special tokens are excluded from corruption.
+Discriminator loss covers nonpadding tokens. Shared embeddings occur once in
+the optimizer; the first warm-up update has learning rate zero.
 
 ## Punctuation fine-tuning
 
-The final head is `Linear(hidden,512) -> SELU -> Linear(512,4)`. The default
-`word_final` recipe removes punctuation before tokenization and applies weighted
-cross-entropy to completed final subwords only. Padding and truncated partial
-words do not contribute. Class weights in NONE/QUESTION/PERIOD/COMMA order are
-1/5/2.5/1.5. The backbone LR is 5e-5; head LR 2e-4; batch 8, four epochs. AdamW uses
-PyTorch's default beta/epsilon and weight decay 0.01. From epoch 2 onward, LRs are
-multiplied by 0.95 every 10,000 within-epoch steps. Gradient norm is clipped to 1.0.
-The final epoch is used; the validation set does not select a checkpoint.
+Head: `Linear(hidden,512) -> SELU -> Linear(512,4)`. Default `word_final` loss:
+weighted cross-entropy at completed word ends, after removing punctuation before
+tokenization. Exclude padding and partial words at the 512-subword limit.
 
-Input sentences are lowercased, split with validation fraction 0.05 and split
-seed 0, and assembled into blocks of 1-15 sentences. Trailing whitespace-separated
-tokens are randomly removed using the archived block-construction routine.
-In the default word-final mode, sentence extraction retains unfinished final text
-and numeric sentence endings; sentences and blocks without lexical words are
-filtered with counts recorded in the run metadata/history. Punctuation `.,?!`
-is separated before lexical normalization, and exclamation marks map to PERIOD.
-The same parser prepares the default gate labels and inference words.
-Inputs are truncated at 512 subwords for fine-tuning. Fine-tuning seeds are
-42,13,100. Evaluation uses complete word-final targets.
+| Setting | Value |
+|---|---|
+| Epochs / batch size | 4 / 8 |
+| Backbone / head learning rate | 5e-5 / 2e-4 |
+| Optimizer | PyTorch AdamW; beta (0.9, 0.999), epsilon 1e-8, weight decay 0.01 |
+| Learning-rate decay | Multiply by 0.95 every 10,000 steps within each epoch, starting at epoch 2 |
+| Class weights: NONE / QUESTION / PERIOD / COMMA | 1 / 5 / 2.5 / 1.5 |
+| Gradient norm limit | 1.0 |
+| Fine-tuning seeds | 42, 13, 100 |
+| Validation split | 5% of sentences, split seed 0 |
+
+Lowercase sentences and combine them into blocks of 1-15 sentences, with random
+removal of trailing whitespace-separated tokens. The default parser retains
+unfinished final sentences and numeric endings, separates `.,?!` and maps `!` to
+PERIOD. It drops nonlexical sentences/blocks and records counts in `run.json` and
+`training_history.json`. Gate preparation uses the same parser.
+
+Use the final epoch; record word-final validation metrics after each epoch.
+See [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for other loss modes.
 
 ## Early exit
 
-For L6 the exit depths are 2,3,4,5,6. Only added heads are trained, for two epochs
-with batch 8, head LR 2e-4, weighted CE averaged over intermediate heads, and
-no distillation term. Base/final-head parameters remain frozen; the archived
-training procedure leaves backbone dropout enabled while training the heads.
-Validation records separate word-final metrics for every head after each epoch.
-Inference uses evaluation mode and float32. The first eligible head whose maximum
-softmax probability is at least tau supplies the target label. All context tokens
-are updated through that layer. The complete window stops at the target's exit.
+Small-L6 adds heads at layers 2-5. Train for two epochs, batch 8, learning rate
+2e-4; average weighted cross-entropy over the added heads. Freeze the encoder and
+layer-6 head, keeping backbone dropout enabled during training. Per-head validation
+is saved under `validation_by_depth` in `training_history.json`.
 
-The matched policy searches up to 1025 evenly indexed confidence midpoints, plus
-0,1,0.99 and an explicit full-model endpoint. It minimizes average depth, subject
-to the quality constraints described in README. Depth is not measured wall time.
+At inference, stop at the first head whose maximum softmax probability reaches
+the threshold, or at layer 6. All context tokens advance together. Use evaluation
+mode and float32. Fixed exit uses `tau=0.99`; matched exit calibrates the threshold.
 
-## Selective KV reuse
+## KV reuse
 
-Window 64 subwords; target word plus up to 4 future words are recomputed through all
-layers. Previously processed left words reuse per-layer keys/values. The cache is
-approximate because those representations were computed with older right context.
-Absolute positions are anchored until the next index would exceed 127; then the
-current window is recomputed from position 0 and the cache reinitialized.
+Window: 64 subwords. Recompute the target and up to four following words through
+every layer; reuse earlier words' per-layer keys and values. Cached representations
+retain the right context available when computed.
 
-Gate feature order for Small-L6 (268 values):
+Anchor absolute positions until the next index would exceed 127, then recompute
+the window from position zero and reset the cache. A repair runs the full window
+from position zero and replaces only the current label, leaving the cache intact.
+
+## Gate
+
+For Small-L6, the input has 268 values, in this order:
 
 1. Four fast-branch class probabilities.
-2. The target final-subword hidden state (256 values).
-3. Eight scalars, in this exact order:
-   - available future words /4;
-   - current visible word length in subwords /8;
-   - target offset within the window /63;
-   - anchored target position /127;
-   - reused prefix length /64;
-   - window length /64;
-   - indicator that the complete window was refreshed;
-   - newly arrived subwords since the previous decision /8 (zero initially).
+2. The target word's final-subword hidden state: 256 values.
+3. Eight scalars:
+   - available future words / 4;
+   - visible target-word length in subwords / 8;
+   - target offset within the window / 63;
+   - anchored target position / 127;
+   - reused prefix length / 64;
+   - window length / 64;
+   - full-window refresh indicator;
+   - newly arrived subwords since the previous decision / 8, initially zero.
 
-The MLP has 268 inputs, 32 ReLU units and one sigmoid output: 8,641 parameters.
-Standardization uses fit-only means/stds, std floor 1e-4, then clipping to [-8,8].
-Helpful-repair labels are `fast != gold and full == gold`. Weighted BCE uses
-class weights 1/5/2.5/1.5 and a fit-only positive-class balance. Gate training uses
-AdamW, LR 0.001, weight decay 0.001, 32 epochs, batch 1024 and gate seed 42.
+Gate: `Linear(268,32) -> ReLU -> Linear(32,1)`, sigmoid score, 8,641 parameters.
+Standardize with fit-set means/stds, std floor 1e-4; clip to [-8,8].
+Training target: `fast != gold and full == gold`.
 
-Threshold selection minimizes repair fraction under calibration W-F1>=full and
-per-punctuation F1>=full-0.5 points. Ties prefer higher W-F1. Candidate thresholds
-are 1025 evenly indexed score midpoints plus always/never repair. Margin uses
-1-(top1 probability-top2 probability); entropy uses natural logarithms. The gate
-is trained independently for each punctuation checkpoint.
+Use weighted binary cross-entropy with punctuation weights 1/5/2.5/1.5 and a
+positive-class balance computed on the fit set. Train with AdamW, learning rate
+0.001, weight decay 0.001, batch size 1024, 32 epochs and seed 42.
 
-The repair path is a full forward pass over the same window with positions
-starting from zero. It changes only the current label, never the cache. Combining
-early exit with the repair branch is not the default method and is not exposed
-as an equivalent implementation of the paper's main policy.
+## Calibration
+
+`prepare_gate_data.py` removes duplicate sentences and train/validation overlaps.
+It creates 128 fit streams from the training pool and 48 calibration plus 48
+validation streams from disjoint halves of the held-out 5%. Each stream contains
+256 words, concatenated from reference sentences. Sampling seed: 20260909.
+
+Thresholds must satisfy both conditions on the calibration set:
+
+- W-F1 is at least the full model's W-F1.
+- Each punctuation-class F1 is within 0.5 points of the full model or higher.
+
+Minimize repair rate for gate/margin/entropy or mean depth for matched exit;
+break ties by higher W-F1. Search up to 1025 midpoints between adjacent scores,
+plus always/never-repair endpoints. Exit includes 0, 1, 0.99 and a full-model endpoint.
+
+Margin uses `1 - (top1 probability - top2 probability)`. Entropy uses natural
+logarithms. Each punctuation checkpoint gets its own gate and calibrated thresholds.
+The separate validation streams are used only for evaluation.

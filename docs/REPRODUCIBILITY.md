@@ -1,46 +1,30 @@
-# Reproducibility and checkpoint compatibility
-
-## What this release provides
-
-The scripts provide word-final fine-tuning and early-exit/KV-reuse inference. They can train new models
-and import archived checkpoints. A new run is not a bit-identical regeneration
-of an earlier experiment: original corpus files, model checkpoints, tokenizer,
-training configuration and evaluation protocol determine the result. Training
-corpora and fine-tuned task weights are not included.
-
-The public Hugging Face Small-L6 model is the one-million-update **pretrained**
-encoder, without punctuation fine-tuning, exit heads or a gate. It must be
-fine-tuned before the inference commands are useful.
+# Data and checkpoints
 
 ## Training modes
 
-`finetune.py` and `train_exit.py` store the selected mode in every saved bundle:
+`--loss-mode` selects tokenization and loss positions:
 
-| Mode | Input tokenization | Direct loss positions |
+| Mode | Tokenization | Loss positions |
 |---|---|---|
 | `word_final` (default) | Remove punctuation before tokenization | Completed word ends |
-| `original_subwords` | Tokenize punctuated text, then remove punctuation tokens | All nonpadding retained subwords |
-| `archived_word_final` | Same token IDs/labels as `original_subwords` | Completed word ends only |
+| `original_subwords` | Tokenize punctuated text, then remove punctuation tokens | All retained nonpadding subwords |
+| `archived_word_final` | Same as `original_subwords` | Completed word ends |
 
-Use the same `--loss-mode` when fitting exit heads and running
-`prepare_gate_data.py` for an existing model. The explicit `original_subwords`
-and `archived_word_final` modes retain the archived sentence parsing; the default
-`word_final` mode keeps final text fragments and filters nonlexical inputs.
-Fit new gates and exit heads after changing the fine-tuned encoder.
+Use the same mode for fine-tuning, exit-head training and `prepare_gate_data.py`.
+It is stored in model metadata and generated gate streams. The two archived modes
+retain the original sentence parser; `word_final` keeps final text fragments and
+filters nonlexical inputs.
 
-## Native Hugging Face import
+## Hugging Face import
 
-`import_model.py --hf` reads the architecture and tokenizer from the same HF model
-or local native Transformers directory. `--family`, `--layers` and `--tokenizer`
-are legacy-import options and are rejected with `--hf`. Pin `--revision` to a
-commit for repeatable downloads. Bundle metadata records both `requested_revision`
-and the resolved commit in `revision`; local directories have no Hub commit.
-The tokenizer is fetched at the resolved model commit when available.
+`import_model.py --hf` reads the architecture and tokenizer from the same Hub
+repository or local Transformers directory. Pin `--revision` to a commit for
+repeatable downloads. Metadata stores the requested revision and resolved Hub
+commit; the tokenizer is loaded at that commit. Local directories have no Hub revision.
+
+`--family`, `--layers` and `--tokenizer` apply to `--legacy` import.
 
 ## Original checkpoints
-
-A tensor-only original pretrained/fine-tuned checkpoint can be imported without
-the original server paths or training package:
 
 ```bash
 python import_model.py --legacy discriminator_1000000.pth --kind encoder --family Small --layers 6 --out runs/imported_encoder
@@ -48,45 +32,43 @@ python import_model.py --legacy epoch4_final.data --kind punctuation --loss-mode
 python import_model.py --legacy epoch2_final.data --kind exit --loss-mode original_subwords --family Small --layers 6 --out runs/imported_exit
 ```
 
-Supply `--tokenizer` when using a local copy. Legacy task checkpoint import
-requires an explicit `--loss-mode` because that provenance cannot be inferred
-from tensor values. Select the mode matching the checkpoint's training
-configuration from the table above. `XXS` in the old filenames maps to
-`Mini`. The importer strictly checks tensor shapes/keys. It discards redundant
-single-expert router parameters and the deterministic position-ID buffer; the
-dense forward computation remains the same. Mini retains its learned embedding
-projection even though embedding and hidden widths are both 128. A stock HF
-ELECTRA with equal widths otherwise omits this layer.
+For punctuation and exit checkpoints, supply the loss mode used during training.
+Use `--tokenizer` for a local tokenizer. The archived exit importer supports Small-L6.
+Old filenames use `XXS` for the family now called `Mini`.
 
-## Deliberate engineering changes
+Import checks tensor names and shapes. It drops redundant single-expert router
+weights and the position-ID buffer. Mini keeps its learned 128-to-128 embedding
+projection; importing a stock HF model with equal widths inserts an identity projection.
 
-The release removes hardcoded cluster paths, remote experiment tracking and
-asynchronous input workers. Pretraining uses a deterministic bounded-memory
-sampler, with RNG and queued segments saved for resume. It randomizes loaded
-segments before taking the bounded subset, so the tail of a small file remains
-eligible. These changes affect sample/RNG order; full retraining is not claimed
-to reproduce the old weight hashes. Mathematical objectives and configuration
-values are documented in [METHOD.md](METHOD.md).
+## Saved files and resume
 
-Model outputs are safetensors bundles with strict weight, architecture and
-complete-tokenizer hashes. Gate/policy files are bound to those identities.
-Original PyTorch checkpoints and pretraining resume files are loaded with
-`weights_only=True`. Output directories are never silently overwritten.
+A model directory contains `model.safetensors`, `config.json` and `tokenizer/`.
+Loading verifies hashes of weights, architecture and tokenizer files. Gates and
+policies store the same model identifiers. Refit the gate and recalibrate after
+changing its punctuation checkpoint.
 
-## Evaluation boundaries
+Pretraining also saves `training.pt`: generator, discriminator, optimizer,
+scheduler, random-number state and sampler state. Resume with the same corpus
+and configuration into a new output directory:
 
-The provided `evaluate.py` takes already aligned labels. News/Talks evaluation
-in the paper aligns recognized/reference words within annotated segments,
-assigns NONE to inserted words and counts punctuation on deleted words as missed.
-The plain transcript download alone does not encode all original segment
-alignment metadata. Do not interpret whole-recording realignment as an exact
-reproduction of those ASR scores.
+```bash
+python pretrain.py --data-dir data/pretraining --family Small --layers 6 --out runs/resumed --resume runs/pretrain_small_l6/training.pt --precision bf16
+```
 
-CPU timings in the article used four pinned physical AMD EPYC 9354 cores,
-float32 inference and PyTorch 2.13.0+cu130. This release's tests run with the
-versions pinned in `requirements.txt`; it does not assert that inference times
-on another environment equal the published measurements. It includes functional
-inference, not a replacement for the article's controlled timing protocol.
+The sampler saves its queued segments and sampling state. PyTorch checkpoints
+are loaded with `weights_only=True`. Existing nonempty output directories are rejected.
 
-The supplied tests verify algorithmic behavior and short training runs. They do
-not repeat the one-million-step pretraining or three complete fine-tuning runs.
+## ASR evaluation
+
+The [test transcript download](https://owncloud.cesnet.cz/index.php/s/q0TbViTq8GG7sLI)
+contains reference and ASR text. `evaluate.py` requires word-aligned JSONL, as
+shown in the [README](../README.md#evaluate).
+
+The paper aligns reference and recognized words within annotated segments,
+assigns NONE to insertions and counts punctuation on deleted words as missed.
+The download does not contain all segment-alignment metadata, so whole-recording
+alignment can give different scores.
+
+CPU timings in the paper use four pinned physical AMD EPYC 9354 cores, float32
+and PyTorch 2.13.0+cu130. The test environment is recorded in
+[VALIDATION.md](VALIDATION.md).
